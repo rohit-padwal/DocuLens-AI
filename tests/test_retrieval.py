@@ -28,6 +28,23 @@ def test_context_budget_preserves_complete_chunks(chunk):
     assert budget_context([large, chunk], top_k=2, max_chars=50) == [chunk]
 
 
+def test_context_budget_does_not_spend_budget_on_duplicate_ids(chunk):
+    other = chunk.model_copy(update={"id": "other"})
+    assert budget_context([chunk, chunk, other], top_k=2, max_chars=1000) == [chunk, other]
+
+
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_common_terms_still_retrieve_matching_chunks_in_small_corpora(chunk, count):
+    class NoDenseMatches:
+        def max_marginal_relevance_search(self, *args, **kwargs):
+            return []
+
+    chunks = [chunk.model_copy(update={"id": f"chunk_{i}"}) for i in range(count)]
+    retriever = HybridRetriever(NoDenseMatches(), chunks, count, 5, 1000)
+    assert asyncio.run(retriever.retrieve("audit")) == chunks
+    assert asyncio.run(retriever.retrieve("unmatchedword")) == []
+
+
 def test_real_chroma_ingestion_is_idempotent_and_removes_stale_chunks(settings, tmp_path):
     root = tmp_path / "docs"
     root.mkdir()

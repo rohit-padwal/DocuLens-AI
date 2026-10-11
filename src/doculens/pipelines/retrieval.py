@@ -7,7 +7,7 @@ from collections.abc import Sequence
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25Plus
 
 from doculens.schemas import Chunk
 
@@ -42,13 +42,17 @@ def reciprocal_rank_fusion(rankings: Sequence[Sequence[Chunk]], k: int = 60) -> 
 def budget_context(chunks: Sequence[Chunk], top_k: int, max_chars: int) -> list[Chunk]:
     """Keep full chunks only: returned citations refer to precisely what the LLM sees."""
     selected: list[Chunk] = []
+    seen: set[str] = set()
     used = 0
     for chunk in chunks:
+        if chunk.id in seen:
+            continue
         if len(selected) >= top_k:
             break
         if used + len(chunk.text) > max_chars:
             continue
         selected.append(chunk)
+        seen.add(chunk.id)
         used += len(chunk.text)
     return selected
 
@@ -64,7 +68,9 @@ class HybridRetriever:
         self.top_k = top_k
         self.candidate_k = candidate_k
         self.max_chars = max_chars
-        self.bm25 = BM25Okapi([tokenize(chunk.text) or ["__empty__"] for chunk in chunks])
+        # Okapi IDF can be zero/negative for common terms in small collections. BM25Plus
+        # keeps IDF positive; delta=0 avoids giving nonmatching chunks a baseline score.
+        self.bm25 = BM25Plus([tokenize(chunk.text) or ["__empty__"] for chunk in chunks], delta=0.0)
 
     def _search(self, query: str) -> list[Chunk]:
         dense = self.store.max_marginal_relevance_search(
