@@ -10,17 +10,18 @@ inject local doubles into the same graph. No provider call happens during module
 | --- | --- | --- |
 | `pipelines/ingestion.py` | Load UTF-8 text, Markdown, and PDF pages; split with overlap | Source paths stay within the selected document root |
 | `pipelines/index.py` | Persist Chroma chunks and embeddings | IDs are deterministic; index configuration must match |
-| `pipelines/retrieval.py` | Fuse semantic MMR and BM25 rankings | Context contains full chunks within a character budget |
+| `pipelines/retrieval.py` | Fuse semantic MMR and BM25Plus rankings | Context contains unique full chunks within a character budget |
 | `agents/models.py` | Separate generation and verification prompts | Every provider result must satisfy a Pydantic schema |
 | `agents/graph.py` | Execute the bounded verification loop | A rejected draft is never returned as the final answer |
-| `api.py` | Validate requests, authenticate, limit concurrency | Provider failures have sanitized HTTP responses |
+| `api.py` / `middleware.py` | Bound payloads, validate requests, authenticate, limit concurrency | Body limits apply before parsing; provider errors are sanitized |
 | `evaluation/run.py` | Execute held-out cases and score actual outputs | Missing/invalid scores cannot silently pass |
 
 ## Request lifecycle
 
 1. Validate and strip the question (maximum 2,000 characters).
 2. Retrieve dense candidates with maximal marginal relevance to reduce redundancy.
-   Independently score the stored corpus with BM25. Fuse rankings using
+   Independently score the stored corpus with BM25Plus (`delta=0` to avoid boosting
+   nonmatches). Positive IDF keeps common terms useful in small corpora. Fuse rankings using
    `sum(1 / (60 + rank))`; these scores order candidates, they are not confidence estimates.
 3. Keep up to `top_k` complete chunks within `max_context_chars` (a character bound,
    not an exact tokenizer count). Pass exactly these chunks to the generator.
@@ -33,6 +34,10 @@ inject local doubles into the same graph. No provider call happens during module
    and a focused revised query. Context is replaced, not indefinitely accumulated.
 7. Return a verified answer with cited excerpts, or abstain after `1 + max_revisions`
    drafts. An end-to-end asynchronous deadline covers the entire graph.
+
+Every retrieval attempt clears the previous verifier report. If a new attempt has
+insufficient evidence, its abstention cannot expose claim checks for a different draft
+or different chunks. Empty claim text also fails the deterministic evidence gate.
 
 The generator and verifier are separate roles; using the same underlying model can
 produce correlated mistakes. Configure different models when testing that tradeoff.
@@ -53,8 +58,11 @@ fail early; select a new collection to rebuild. Chroma is also the lexical corpu
 so there is no separate BM25 manifest to drift out of sync.
 
 This implementation targets a small to medium single-tenant corpus. BM25 loads the
-entire collection into memory at startup. Ingestion is not a multi-file transaction;
-a failed run can leave an incomplete update. Stop query workers during ingestion and
+entire collection into memory at startup. Parsing preflight loads every input before
+any writes or provider setup, so a malformed later file leaves the index unchanged.
+Preflight holds the prepared chunks in memory; factor that into ingestion capacity.
+Ingestion is not a multi-file transaction; embedding or persistence failures can still
+leave an incomplete update. Stop query workers during ingestion and
 restart them afterward. For continuously updated production corpora, build versioned
 collections and atomically switch an external active-index pointer after validation.
 
@@ -71,6 +79,12 @@ answerable case gets zero answer relevancy and faithfulness; retrieval recall is
 measured. Unanswerable cases are evaluated through status accuracy because recall and
 faithfulness have no meaningful gold facts. The gate requires every expected status to
 match in addition to metric thresholds. Exceptions and NaN/inf scores fail the run.
+
+The CLI exclusively creates a new output directory before any provider setup. Existing
+directories are rejected without modification. Each completed summary is written to a
+temporary file and atomically renamed. A failed run writes an explicit failing summary
+with the exception type and preserves any partial JSONL results for debugging. No raw
+exception text is saved because provider errors may contain confidential data.
 
 Store `results.jsonl` and `summary.json` together. Keep the dataset, model names,
 dependency versions, prompts, and corpus fixed for comparisons. Judge scores vary

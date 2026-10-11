@@ -10,7 +10,7 @@ designed as a portfolio repository and a tested foundation for a single-tenant d
 ## What it demonstrates
 
 - **Advanced RAG:** page-aware PDF/text ingestion, overlapping chunks, persistent Chroma
-  embeddings, semantic MMR retrieval, BM25 keyword search, reciprocal rank fusion, and a
+  embeddings, semantic MMR retrieval, BM25Plus keyword search, reciprocal rank fusion, and a
   bounded context window.
 - **Agentic workflows:** typed LangGraph state, separate generator/verifier roles,
   critique-driven query refinement, deterministic citation gates, bounded revisions,
@@ -18,7 +18,8 @@ designed as a portfolio repository and a tested foundation for a single-tenant d
 - **LLM evaluation:** Ragas context recall, answer relevancy, and faithfulness; curated
   gold answers; unanswerable and injection cases; JSONL reports; configurable quality gates.
 - **Engineering:** validated settings, dependency injection, async deadlines, API
-  admission control, optional authentication, sanitized errors, request IDs, local tests,
+  admission control, streamed request limits, optional authentication, sanitized errors,
+  request IDs, local tests,
   GitHub Actions, and a non-root Docker image.
 
 ## Stack
@@ -27,7 +28,7 @@ designed as a portfolio repository and a tested foundation for a single-tenant d
 | --- | --- |
 | Language | Python 3.11+; Python 3.12 recommended for local setup |
 | Orchestration | LangGraph |
-| Retrieval | LangChain Core + ChromaDB + BM25 |
+| Retrieval | LangChain Core + ChromaDB + BM25Plus |
 | Models | Configurable OpenAI models through LangChain adapters |
 | Evaluation | Ragas 0.4 collection-based metrics |
 | Interface | FastAPI with interactive OpenAPI documentation |
@@ -81,6 +82,7 @@ DocuLens-AI/
 │   ├── evaluation/
 │   │   └── run.py            # Benchmark execution, Ragas metrics, quality gates
 │   ├── api.py                # FastAPI application factory
+│   ├── middleware.py         # Query body limit before JSON parsing
 │   ├── cli.py                # doculens ingest / ask
 │   ├── config.py             # Validated environment configuration
 │   ├── schemas.py            # Typed requests, responses, drafts, verdicts
@@ -155,6 +157,13 @@ For your own documents, create `data/private/`, add PDF, Markdown, or UTF-8 text
 and run `doculens ingest data/private`. Use a dedicated collection for each document root.
 Restart the API after ingestion so its BM25 corpus reflects the current index.
 Scanned PDFs require OCR before ingestion; the loader reports files without extractable text.
+Every input file is parsed and validated before any chunks are written. A malformed
+later file therefore cannot leave earlier files partially updated. Embedding or storage
+failures can still interrupt writes, so ingestion remains an offline operation.
+
+Keyword retrieval uses BM25Plus with a zero baseline offset. Common query terms retain
+positive scores even in a one- or two-chunk corpus, and chunks without matching terms
+receive no lexical boost.
 
 ## Core pipeline in Python
 
@@ -213,6 +222,12 @@ generate them with a real evaluation run.
 
 The process exits with code `1` if a metric mean misses its threshold or any expected
 status is wrong. Provider exceptions and invalid numeric scores also fail the run.
+Each run reserves a new report directory before creating provider clients. An explicit
+`--output` path must not already exist; omitting it creates a unique timestamped path
+under `reports/`. Use a new output path when rerunning a benchmark. Failure summaries
+contain `passed: false`, `run_status: failed`, and the exception type, while completed
+runs use `run_status: completed`. Summary files are replaced atomically, preventing
+partial writes or reuse of a previous run's passing summary.
 Answerable cases that abstain receive zero answer relevancy and faithfulness, so the
 graph cannot improve its benchmark by refusing every question. Unanswerable cases are
 judged through status accuracy and excluded from undefined claim metrics.
@@ -251,12 +266,16 @@ triggered and requires an `OPENAI_API_KEY` repository secret.
 | `DOCULENS_MODEL_TIMEOUT_SECONDS` | `30` | Per-provider timeout |
 | `DOCULENS_REQUEST_TIMEOUT_SECONDS` | `120` | Complete graph deadline |
 | `DOCULENS_MAX_CONCURRENT_REQUESTS` | `4` | Per-process admission limit |
+| `DOCULENS_MAX_REQUEST_BYTES` | `16384` | Maximum streamed `/query` body size before parsing |
 | `DOCULENS_API_KEY` | Unset | Optional API authentication |
 
 Set `DOCULENS_API_KEY` before exposing the API externally and include an `X-API-Key`
 request header. Keep the default loopback bind for local use. Place public deployments
 behind a gateway providing TLS, body-size limits, per-client rate limits, and quotas.
-The current implementation has one shared corpus and no per-document tenant permissions.
+The service independently enforces its query body limit, including chunked uploads and
+misleading Content-Length headers; oversized requests receive HTTP 413. Capacity rejection
+returns HTTP 429 with `Retry-After: 1`. The current implementation has one shared corpus
+and no per-document tenant permissions.
 
 Chroma telemetry is disabled in the client configuration. Ragas tracking is disabled
 by default by the evaluation adapter. For optional LangSmith tracing, export
@@ -275,7 +294,8 @@ python -m pip check
 Tests cover successful answers, critique-driven retries, exhausted budgets, no evidence,
 invalid citations, unsupported claims, request deadlines, state isolation, API errors,
 authentication, capacity limits, real Chroma persistence using local embeddings, stale
-chunk removal, index compatibility, and evaluation failure handling. They also construct
+chunk removal, index compatibility, ingestion preflight, streamed body limits, small-corpus
+keyword matching, stale verifier reports, and evaluation failure handling. They also construct
 the current Ragas collection metrics without network calls.
 
 Dependency compatibility ranges are declared in `pyproject.toml`, and
