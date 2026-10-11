@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     model_timeout_seconds: float = Field(default=30, gt=0, le=120)
     request_timeout_seconds: float = Field(default=120, gt=0, le=600)
     max_concurrent_requests: int = Field(default=4, ge=1, le=32)
+    max_request_bytes: int = Field(default=16384, ge=1024, le=1_000_000)
     max_file_bytes: int = Field(default=20_000_000, ge=1)
 
     @model_validator(mode="after")

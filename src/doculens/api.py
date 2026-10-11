@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from doculens.agents.graph import RagPipeline
 from doculens.config import Settings
+from doculens.middleware import QueryBodyLimit
 from doculens.schemas import Answer, QueryRequest
 from doculens.service import build_pipeline
 
@@ -31,10 +32,13 @@ def create_app(
         app.state.pipeline = await asyncio.to_thread(pipeline_factory, settings)
         app.state.active_requests = 0
         app.state.ready = True
-        yield
-        app.state.ready = False
+        try:
+            yield
+        finally:
+            app.state.ready = False
 
     app = FastAPI(title="DocuLens-AI", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(QueryBodyLimit, max_bytes=settings.max_request_bytes)
 
     @app.middleware("http")
     async def request_logging(request: Request, call_next):
@@ -70,6 +74,7 @@ def create_app(
     @app.post("/query", response_model=Answer)
     async def query(
         payload: QueryRequest,
+        request: Request,
         api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
     ):
         configured = settings.api_key.get_secret_value() if settings.api_key else ""
@@ -77,7 +82,11 @@ def create_app(
             raise HTTPException(status_code=401, detail="Invalid API key")
         # No awaits between the capacity check and increment: atomic within one event loop.
         if app.state.active_requests >= settings.max_concurrent_requests:
-            raise HTTPException(status_code=429, detail="Service is at capacity; retry later")
+            raise HTTPException(
+                status_code=429,
+                detail="Service is at capacity; retry later",
+                headers={"Retry-After": "1"},
+            )
         app.state.active_requests += 1
         try:
             result = await app.state.pipeline.run(payload.question)
@@ -85,7 +94,9 @@ def create_app(
         except TimeoutError as exc:
             raise HTTPException(status_code=504, detail="Query deadline exceeded") from exc
         except Exception as exc:
-            logger.warning("pipeline_failed type=%s", type(exc).__name__)
+            logger.warning(
+                "pipeline_failed id=%s type=%s", request.state.request_id, type(exc).__name__
+            )
             raise HTTPException(
                 status_code=502, detail="Retrieval or model provider failed"
             ) from exc
