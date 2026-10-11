@@ -53,11 +53,13 @@ def load_chunks(store: Chroma, settings: Settings) -> list[Chunk]:
 
 def ingest_directory(root: Path, settings: Settings, store: Chroma | None = None) -> dict[str, int]:
     files = discover_files(root)
+    # Validate every input before opening provider clients or mutating an existing index.
+    # Embedding failures can still interrupt writes; this is a parsing preflight, not a transaction.
+    prepared = [chunk_file(path, root, settings) for path in files]
     store = store if store is not None else open_store(settings)
     load_chunks(store, settings)  # Reject incompatible collections before making any changes.
     inserted = removed = unchanged = 0
-    for path in files:
-        documents = chunk_file(path, root, settings)
+    for documents in prepared:
         source = documents[0].metadata["source"]
         old_ids = set(store.get(where={"source": source})["ids"])
         new_ids = {doc.metadata["chunk_id"] for doc in documents}
