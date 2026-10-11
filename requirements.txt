@@ -1,0 +1,2 @@
+# Runtime dependencies live in pyproject.toml; install evaluation and test tools too.
+-e .[evaluation,dev]

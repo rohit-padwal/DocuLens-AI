@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "doculens-ai"
+version = "0.1.0"
+description = "Evidence-grounded agentic RAG with hybrid retrieval and automated evaluation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+  "langgraph>=1.0,<2",
+  "langchain-core>=1.0,<2",
+  "langchain-openai>=1.0,<2",
+  "langchain-chroma>=1.0,<2",
+  "langchain-text-splitters>=1.0,<2",
+  "chromadb>=1.0,<2",
+  "rank-bm25>=0.2.2,<0.3",
+  "pypdf>=6,<7",
+  "pydantic>=2.10,<3",
+  "pydantic-settings>=2.10,<3",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.optional-dependencies]
+# Ragas 0.4.3 imports the VertexAI module removed in langchain-community 0.4.2.
+evaluation = ["ragas==0.4.3", "langchain-community==0.4.1", "openai>=2,<3"]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8", "ruff>=0.11,<1", "httpx>=0.28,<1"]
+
+[project.scripts]
+doculens = "doculens.cli:main"
+doculens-evaluate = "doculens.evaluation.run:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/doculens"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
