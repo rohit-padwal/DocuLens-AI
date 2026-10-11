@@ -29,7 +29,7 @@ class RagState(TypedDict, total=False):
     retrieval_query: str
     chunks: list[Chunk]
     draft: Draft
-    verification: Verification
+    verification: Verification | None
     attempts: int
     feedback: str
     accepted: bool
@@ -55,7 +55,12 @@ def evidence_errors(draft: Draft, report: Verification, chunks: list[Chunk]) -> 
     if not report.claims:
         errors.append("Verifier must enumerate factual claims")
     for claim in report.claims:
-        if not claim.supported or not claim.evidence_ids or not set(claim.evidence_ids) <= listed:
+        if (
+            not claim.claim.strip()
+            or not claim.supported
+            or not claim.evidence_ids
+            or not set(claim.evidence_ids) <= listed
+        ):
             errors.append(f"Unsupported or incorrectly cited claim: {claim.claim}")
     if not report.grounded or not report.answers_question:
         errors.append("Verifier rejected grounding or question coverage")
@@ -100,6 +105,8 @@ class RagPipeline:
         )
         return {
             "chunks": chunks,
+            "verification": None,
+            "accepted": False,
             "trace": self.event(state, "retrieve", started, f"Retrieved {len(chunks)} chunks"),
         }
 

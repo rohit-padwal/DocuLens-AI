@@ -104,6 +104,7 @@ def test_insufficient_context_skips_verifier(settings, chunk, draft):
         "wrong_evidence",
         "coverage",
         "empty_answer",
+        "blank_claim",
     ],
 )
 def test_deterministic_gate_rejects_bad_evidence(mode, chunk, draft, verification):
@@ -120,6 +121,8 @@ def test_deterministic_gate_rejects_bad_evidence(mode, chunk, draft, verificatio
         verification.claims[0].evidence_ids = ["unknown"]
     elif mode == "coverage":
         verification.answers_question = False
+    elif mode == "blank_claim":
+        verification.claims[0].claim = "   "
     else:
         draft.answer = ""
     assert evidence_errors(draft, verification, [chunk])
@@ -146,3 +149,41 @@ def test_runs_do_not_share_graph_state(settings, chunk, draft, verification):
     assert second.answer.question == "second?"
     assert first.answer.attempts == second.answer.attempts == 1
     assert len(first.answer.trace) == len(second.answer.trace) == 3
+
+
+def test_abstention_after_empty_retry_does_not_return_stale_verification(
+    settings, chunk, draft, verification
+):
+    class DisappearingEvidence:
+        def __init__(self):
+            self.calls = 0
+
+        async def retrieve(self, query):
+            self.calls += 1
+            return [chunk] if self.calls == 1 else []
+
+    bad = verification.model_copy(update={"grounded": False})
+    result = asyncio.run(
+        RagPipeline(DisappearingEvidence(), FakeAgents(draft, [bad]), settings).run("retention?")
+    )
+    assert result.answer.status == "abstained"
+    assert result.answer.verification is None
+    assert result.retrieved_chunks == []
+
+
+def test_insufficient_context_on_revision_does_not_return_previous_claim_checks(
+    settings, chunk, draft, verification
+):
+    class RevisedAgents(FakeAgents):
+        async def generate(self, question, chunks, feedback):
+            return (
+                draft if not feedback else draft.model_copy(update={"insufficient_context": True})
+            )
+
+    bad = verification.model_copy(update={"grounded": False})
+    result = asyncio.run(
+        RagPipeline(FakeRetriever([chunk]), RevisedAgents(draft, [bad]), settings).run("retention?")
+    )
+    assert result.answer.status == "abstained"
+    assert result.answer.attempts == 2
+    assert result.answer.verification is None
