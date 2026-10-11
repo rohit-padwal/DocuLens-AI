@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import uuid
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -184,6 +185,31 @@ async def evaluate_cases(cases: list[TestCase], pipeline, judge, output: Path) -
 
 
 async def run_evaluation(args: argparse.Namespace) -> bool:
+    # Exclusive directory creation prevents a failed rerun from reusing old passing results.
+    # Reserve it before constructing clients or spending any provider tokens.
+    args.output.mkdir(parents=True, exist_ok=False)
+    try:
+        return await complete_evaluation(args)
+    except Exception as exc:
+        write_summary(
+            args.output / "summary.json",
+            {
+                "passed": False,
+                "run_status": "failed",
+                "error_type": type(exc).__name__,
+                "created_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        raise
+
+
+def write_summary(path: Path, summary: dict) -> None:
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+async def complete_evaluation(args: argparse.Namespace) -> bool:
     settings = Settings()
     cases = load_cases(args.dataset)
     pipeline = build_pipeline(settings)
@@ -198,6 +224,7 @@ async def run_evaluation(args: argparse.Namespace) -> bool:
         "faithfulness": args.min_faithfulness,
     }
     summary = summarize(rows, thresholds)
+    summary["run_status"] = "completed"
     summary["thresholds"] = thresholds
     summary["metadata"] = {
         "created_at": datetime.now(UTC).isoformat(),
@@ -217,9 +244,7 @@ async def run_evaluation(args: argparse.Namespace) -> bool:
         "max_revisions": settings.max_revisions,
         "max_hallucination_risk": settings.max_hallucination_risk,
     }
-    (args.output / "summary.json").write_text(
-        json.dumps(summary, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-    )
+    write_summary(args.output / "summary.json", summary)
     print(json.dumps(summary, indent=2, allow_nan=False))
     return summary["passed"]
 
@@ -234,7 +259,15 @@ def threshold(value: str) -> float:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate the agentic RAG graph with Ragas")
     parser.add_argument("--dataset", type=Path, default=Path("data/evaluation/cases.jsonl"))
-    parser.add_argument("--output", type=Path, default=Path("reports/latest"))
+    default_output = Path("reports") / (
+        "run-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=default_output,
+        help="New report directory; existing paths are never overwritten",
+    )
     parser.add_argument("--min-context-recall", type=threshold, default=0.8)
     parser.add_argument("--min-answer-relevancy", type=threshold, default=0.7)
     parser.add_argument("--min-faithfulness", type=threshold, default=0.85)

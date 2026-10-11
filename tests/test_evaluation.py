@@ -164,3 +164,51 @@ def test_real_ragas_metrics_score_through_mock_provider(settings):
     scores = asyncio.run(score())
     assert scores == {"context_recall": 1.0, "answer_relevancy": 1.0, "faithfulness": 1.0}
     assert not responses
+
+
+def test_existing_report_directory_is_never_overwritten(tmp_path, monkeypatch):
+    from doculens.evaluation import run as module
+
+    output = tmp_path / "old"
+    output.mkdir()
+    path = output / "summary.json"
+    original = '{"passed": true}\n'
+    path.write_text(original, encoding="utf-8")
+
+    def must_not_run(*args):
+        raise AssertionError("Existing report path must be rejected before provider setup")
+
+    monkeypatch.setattr(module, "build_pipeline", must_not_run)
+    with pytest.raises(FileExistsError):
+        asyncio.run(module.run_evaluation(SimpleNamespace(output=output)))
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_failed_run_writes_explicit_failure_summary_and_closes_judge(
+    settings, tmp_path, monkeypatch
+):
+    from doculens.evaluation import run as module
+
+    class BrokenPipeline:
+        async def run(self, question):
+            raise RuntimeError("Private provider details")
+
+    class Judge:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    judge = Judge()
+    monkeypatch.setattr(module, "Settings", lambda: settings)
+    monkeypatch.setattr(module, "build_pipeline", lambda _: BrokenPipeline())
+    monkeypatch.setattr(module, "RagasJudge", lambda _: judge)
+    output = tmp_path / "new-run"
+    args = SimpleNamespace(output=output, dataset=Path("data/evaluation/cases.jsonl"))
+    with pytest.raises(RuntimeError, match="Private provider details"):
+        asyncio.run(module.run_evaluation(args))
+    report = (output / "summary.json").read_text(encoding="utf-8")
+    assert json.loads(report)["passed"] is False
+    assert json.loads(report)["run_status"] == "failed"
+    assert "Private provider details" not in report
+    assert judge.closed
